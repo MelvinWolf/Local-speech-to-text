@@ -1,0 +1,16 @@
+Model: nemo-parakeet-tdt-0.6b-v3
+Hardware:
+CPU: AMX 7700X
+RAM: 64GB
+GPU: AMD RX 7800 XT
+Median of 5 runs. 
+
+
+  SUMMARY  (RTF = inference_time / audio_duration, lower = faster)
+=================================================================
+  Duration       CPU median    CPU RTF   DML median    DML RTF
+  ────────────────────────────────────────────────────────────
+  3s                  156ms      0.052         52ms      0.017
+  5s                  222ms      0.044        181ms      0.036
+  10s                 426ms      0.043        219ms      0.022
+  20s                 849ms      0.042        233ms      0.012

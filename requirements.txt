@@ -1,0 +1,6 @@
+onnxruntime-directml
+onnx-asr
+huggingface_hub
+sounddevice
+numpy
+pyautogui
