@@ -42,8 +42,8 @@ python --version
 ### 2. Clone or download this repo
 
 ```powershell
-git clone https://github.com/YOUR_USERNAME/local-voice-input.git
-cd local-voice-input
+git clone https://github.com/MelvinWolf/Local-speech-to-text.git
+cd local-speech-to-text
 ```
 
 Or download the ZIP and extract it.
@@ -94,6 +94,8 @@ Press your hotkey once to start recording, press again to stop and transcribe. G
 **Hands-free**
 Voice activity detection (VAD) monitors your microphone continuously. When you start speaking, recording begins automatically. When silence is detected for the configured duration, transcription triggers. No button needed, but you cannot pause mid-sentence without triggering a commit.
 
+> **Known limitations of hands-free mode:** The energy-based VAD can cut recordings short during natural mid-sentence pauses, struggle with background noise, and occasionally miss the beginning of speech. These are inherent limitations of simple energy-threshold detection. Toggle mode is more reliable for most use cases. Contributions implementing a proper ML-based VAD are welcome.
+
 ### Hotkey *(toggle mode only)*
 
 The wizard listens for a physical key press and captures the Windows virtual key code. Any key works — function keys, numpad keys, media keys. Numpad + (`VK 0x6B`) is a good default if you have a numpad, as it doesn't interfere with normal typing.
@@ -120,7 +122,7 @@ Models are downloaded automatically from Hugging Face on first use. Subsequent r
 | Option | When to use |
 |---|---|
 | **DirectML** *(default)* | AMD or Intel GPU on Windows |
-| **CUDA** | NVIDIA GPU |
+| **CUDA** | NVIDIA GPU | ENTIRELY UNTESTED AS OF NOW |
 | **CPU** | No GPU, or if GPU acceleration causes issues |
 
 ---
@@ -153,7 +155,6 @@ Voice input will now launch automatically on every login. To stop it, open Task 
 
 **Transcription is empty / very low amplitude in log**
 Multiple instances may be running and interfering with the audio device. Open Task Manager, end all `python.exe` and `pythonw.exe` processes, then relaunch.
-
 
 **Wrong microphone being used**
 `sounddevice` picks the Windows default input device. If that's not your mic, open Windows Sound Settings → Input → set your preferred microphone as default.
