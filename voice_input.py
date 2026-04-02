@@ -5,6 +5,7 @@ Run setup.py first to configure.
 import sys
 import json
 import os
+import re
 import subprocess
 import ctypes
 import ctypes.wintypes as wintypes
@@ -71,6 +72,16 @@ class KBDLLHOOKSTRUCT(ctypes.Structure):
     ]
 
 # --- Clipboard + paste ---
+def remove_fillers(text):
+    """Remove filler words 'um' and 'uh' as whole words, handling all punctuation contexts."""
+    text = re.sub(r',\s*\b(um|uh)\b\s*,', ',',   text, flags=re.IGNORECASE)  # , um, → ,
+    text = re.sub(r'^\s*\b(um|uh)\b\s*,?\s*', '', text, flags=re.IGNORECASE)  # start
+    text = re.sub(r',?\s*\b(um|uh)\b\s*$', '',   text, flags=re.IGNORECASE)  # end
+    text = re.sub(r'\b(um|uh)\b', '',             text, flags=re.IGNORECASE)  # middle
+    text = re.sub(r' {2,}', ' ',                  text)                       # double spaces
+    text = re.sub(r' ([,\.!?;:])', r'\1',          text)                       # space before punct
+    return text.strip()
+
 def set_clipboard(text):
     subprocess.run('clip', input=text.encode('utf-16-le'), check=True,
                    creationflags=subprocess.CREATE_NO_WINDOW)
@@ -125,7 +136,7 @@ def transcribe_and_paste(audio_data=None):
             return
         n_chunks = int(np.ceil(duration / CHUNK_DURATION))
         log.info(f"Transcribing ({n_chunks} chunk(s))...")
-        text = transcribe_chunks(audio)
+        text = remove_fillers(transcribe_chunks(audio))
         log.info(f"-> {text}")
         if text:
             if text[-1] in '.!?':
