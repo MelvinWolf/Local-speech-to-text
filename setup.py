@@ -8,34 +8,44 @@ import ctypes.wintypes as wintypes
 import os
 import sys
 import time
+import sounddevice as sd
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
 MODELS = [
     {
         "key": "nemo-parakeet-tdt-0.6b-v3",
-        "label": "Parakeet v3 — multilingual EN/DE/FR/ES  [Recommended, 2.5GB]"
+        "label": "Parakeet TDT v3 — 25 EU languages (EN/DE/FR/ES/...)  [Recommended, 2.5GB]"
     },
     {
         "key": "nemo-parakeet-tdt-0.6b-v2",
-        "label": "Parakeet v2 — English only, fastest  [1.2GB]"
+        "label": "Parakeet TDT v2 — English only, very fast  [1.2GB]"
     },
     {
-        "key": "nemo-canary-1b-flash",
-        "label": "Canary 1B — best EU multilingual accuracy  [4GB]"
+        "key": "nemo-parakeet-ctc-0.6b",
+        "label": "Parakeet CTC 0.6B — English only, single-pass lowest latency  [1.2GB]"
     },
     {
-        "key": "openai-whisper-large-v3-turbo",
-        "label": "Whisper large-v3-turbo — best overall multilingual  [3GB]"
+        "key": "nemo-canary-1b-v2",
+        "label": "Canary 1B v2 — 25 EU languages, high accuracy + translation  [4GB]"
     },
     {
-        "key": "openai-whisper-tiny",
-        "label": "Whisper tiny — CPU-friendly, lowest quality  [150MB]"
+        "key": "onnx-community/whisper-large-v3-turbo",
+        "label": "Whisper large-v3-turbo — 99 languages, widest coverage  [3GB]"
     },
     {
-        "key": "moonshine-tiny",
-        "label": "Moonshine tiny — fastest English-only, lightest  [100MB]"
+        "key": "whisper-base",
+        "label": "Whisper base — lightweight multilingual fallback  [300MB]"
     },
+    {
+        "key": "onnx-community/whisper-tiny",
+        "label": "Whisper tiny — CPU-friendly, lowest memory  [150MB]"
+    },
+]
+
+QUANTIZATIONS = [
+    (None,   "Full precision (FP32) — best accuracy & DirectML GPU compatibility  [Recommended]"),
+    ("int8", "INT8 quantized — ~3x smaller RAM footprint & faster CPU fallback"),
 ]
 
 PROVIDERS = [
@@ -104,6 +114,17 @@ def menu(prompt, options):
             pass
         print("  Invalid choice, try again.")
 
+def prompt_int_with_default(prompt, default):
+    """Prompt for an integer; return default on empty or non-numeric input."""
+    raw = input(f"{prompt}  [default {default}]: ").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"  Invalid number, using default ({default}).")
+        return default
+
 def vk_to_name(vk):
     """Best-effort human-readable name for a VK code."""
     names = {
@@ -140,15 +161,16 @@ def main():
     # --- Mode ---
     mode_idx = menu(
         "Input mode:",
-        ["Toggle  — press hotkey to start, press again to stop  [Recommended]",
-         "Hands-free  — speaks detected automatically via VAD, no button needed"]
+        ["Toggle       — press hotkey to start, press again to stop  [Recommended]",
+         "Hold (PTT)   — hold hotkey while speaking, release to transcribe",
+         "Hands-free   — speech detected automatically via VAD, no button needed"]
     )
-    config["mode"] = ["toggle", "handsfree"][mode_idx]
+    config["mode"] = ["toggle", "hold", "handsfree"][mode_idx]
 
-    # --- Hotkey (toggle mode only) ---
-    if config["mode"] == "toggle":
+    # --- Hotkey (toggle / hold mode) ---
+    if config["mode"] in ("toggle", "hold"):
         print("\nHotkey detection:")
-        print("  Press the key you want to use as your toggle hotkey...")
+        print("  Press the key you want to use as your hotkey...")
         vk = capture_keypress()
         name = vk_to_name(vk)
         print(f"  Captured: {name}  (VK 0x{vk:02X})")
@@ -164,13 +186,41 @@ def main():
         except ValueError:
             config["vad_silence_ms"] = default_ms
 
+    # --- Microphone ---
+    inputs = [d for d in sd.query_devices() if d.get("max_input_channels", 0) > 0]
+    options = ["(use Windows default input device)"] + [
+        f"{d['name']}  [hostapi {d['hostapi']}, channels {d['max_input_channels']}]"
+        for d in inputs
+    ]
+    mic_idx = menu("Microphone:", options)
+    if mic_idx == 0:
+        config.pop("input_device", None)
+    else:
+        config["input_device"] = inputs[mic_idx - 1]["name"]
+
+    # --- Chunk duration ---
+    print("\nChunk duration: how long (seconds) before audio is split for transcription.")
+    print("  0 = no splitting (recommended for cleaner sentences)")
+    print("  20 = old default (only set if long recordings cause issues on your hardware)")
+    chunk_s = prompt_int_with_default("Chunk duration (s)", existing.get("chunk_duration_s", 0))
+    config["chunk_duration_s"] = max(0, chunk_s)
+
     # --- Model ---
     model_idx = menu("Model:", [m["label"] for m in MODELS])
     config["model"] = MODELS[model_idx]["key"]
 
+    # --- Quantization ---
+    quant_idx = menu("Model precision / quantization:", [q[1] for q in QUANTIZATIONS])
+    if QUANTIZATIONS[quant_idx][0] is not None:
+        config["quantization"] = QUANTIZATIONS[quant_idx][0]
+
     # --- Provider ---
     provider_idx = menu("Execution provider (GPU/CPU backend):", [p[1] for p in PROVIDERS])
     config["providers"] = [PROVIDERS[provider_idx][0]]
+
+    # --- Quality-of-life defaults ---
+    config["audio_feedback"]     = existing.get("audio_feedback", True)
+    config["preserve_clipboard"] = existing.get("preserve_clipboard", True)
 
     # --- Save ---
     with open(CONFIG_FILE, "w") as f:
@@ -178,13 +228,24 @@ def main():
 
     print(f"\nConfig saved to: {CONFIG_FILE}")
     print("\nSummary:")
-    print(f"  Mode     : {config['mode']}")
-    if config["mode"] == "toggle":
-        print(f"  Hotkey   : {config['hotkey_name']} (VK 0x{config['hotkey_vk']:02X})")
+    print(f"  Mode       : {config['mode']}")
+    if config["mode"] in ("toggle", "hold"):
+        print(f"  Hotkey     : {config['hotkey_name']} (VK 0x{config['hotkey_vk']:02X})")
     else:
-        print(f"  VAD delay: {config['vad_silence_ms']}ms")
-    print(f"  Model    : {config['model']}")
-    print(f"  Provider : {config['providers'][0]}")
+        print(f"  VAD delay  : {config['vad_silence_ms']}ms")
+    print(f"  Model      : {config['model']}")
+    print(f"  Quant      : {config.get('quantization') or 'full (fp32)'}")
+    print(f"  Provider   : {config['providers'][0]}")
+    if "input_device" in config:
+        print(f"  Mic        : {config['input_device']}")
+    else:
+        print(f"  Mic        : (system default)")
+    if config["chunk_duration_s"] > 0:
+        print(f"  Chunking   : {config['chunk_duration_s']}s")
+    else:
+        print(f"  Chunking   : disabled")
+    print(f"  Audio cue  : {'enabled' if config['audio_feedback'] else 'disabled'}")
+    print(f"  Keep clip  : {'enabled' if config['preserve_clipboard'] else 'disabled'}")
     print("\nRun voice_input.py to start. Re-run setup.py anytime to change settings.")
 
 if __name__ == "__main__":

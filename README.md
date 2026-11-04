@@ -42,8 +42,8 @@ python --version
 ### 2. Clone or download this repo
 
 ```powershell
-git clone https://github.com/MelvinWolf/Local-speech-to-text.git
-cd local-speech-to-text
+git clone https://github.com/YOUR_USERNAME/local-voice-input.git
+cd local-voice-input
 ```
 
 Or download the ZIP and extract it.
@@ -91,12 +91,13 @@ To run silently in the background on Windows startup, see [Auto-start](#auto-sta
 **Toggle** *(recommended)*
 Press your hotkey once to start recording, press again to stop and transcribe. Good if you pause mid-thought — recording continues until you explicitly stop.
 
+**Hold (Push-to-Talk)**
+Hold down your hotkey while speaking, and release it to stop and transcribe.
+
 **Hands-free**
 Voice activity detection (VAD) monitors your microphone continuously. When you start speaking, recording begins automatically. When silence is detected for the configured duration, transcription triggers. No button needed, but you cannot pause mid-sentence without triggering a commit.
 
-> **Known limitations of hands-free mode:** The energy-based VAD can cut recordings short during natural mid-sentence pauses, struggle with background noise, and occasionally miss the beginning of speech. These are inherent limitations of simple energy-threshold detection. Toggle mode is more reliable for most use cases. Contributions implementing a proper ML-based VAD are welcome.
-
-### Hotkey *(toggle mode only)*
+### Hotkey *(toggle and hold modes)*
 
 The wizard listens for a physical key press and captures the Windows virtual key code. Any key works — function keys, numpad keys, media keys. Numpad + (`VK 0x6B`) is a good default if you have a numpad, as it doesn't interfere with normal typing.
 
@@ -106,23 +107,24 @@ How long silence must persist (in milliseconds) before transcription is triggere
 
 ### Model
 
-| Model | Size | Languages | Best for |
-|---|---|---|---|
-| **Parakeet v3** *(default)* | 2.5 GB | EN, DE, FR, ES + more | Best balance — recommended for European multilingual use |
-| **Parakeet v2** | 1.2 GB | English only | Fastest inference, English-only workflows |
-| **Canary 1B** | 4 GB | EN, DE, FR, ES, IT + more | Highest multilingual accuracy for European languages |
-| **Whisper large-v3-turbo** | 3 GB | 99 languages | Best overall multilingual, widest language coverage |
-| **Whisper tiny** | 150 MB | 99 languages | CPU-only machines or very low-end hardware; accuracy is noticeably lower |
-| **Moonshine tiny** | 100 MB | English only | Fastest possible, lightest footprint, English only |
+| Model | Key | Size | Languages | Best for |
+|---|---|---|---|---|
+| **Parakeet TDT v3** *(default)* | `nemo-parakeet-tdt-0.6b-v3` | 2.5 GB | 25 EU languages (EN, DE, FR, ES, ...) | Best balance — recommended for European multilingual use |
+| **Parakeet TDT v2** | `nemo-parakeet-tdt-0.6b-v2` | 1.2 GB | English only | Very fast English-only transducer |
+| **Parakeet CTC 0.6B** | `nemo-parakeet-ctc-0.6b` | 1.2 GB | English only | Single-pass CTC decoder — lowest latency |
+| **Canary 1B v2** | `nemo-canary-1b-v2` | 4 GB | 25 EU languages | High multilingual accuracy + translation |
+| **Whisper large-v3-turbo** | `onnx-community/whisper-large-v3-turbo` | 3 GB | 99 languages | Widest language coverage |
+| **Whisper base** | `whisper-base` | 300 MB | 99 languages | Lightweight multilingual fallback |
+| **Whisper tiny** | `onnx-community/whisper-tiny` | 150 MB | 99 languages | CPU-only or low-RAM machines |
 
-Models are downloaded automatically from Hugging Face on first use. Subsequent runs load from local cache.
+Optional `int8` quantization (`"quantization": "int8"`) can be enabled in `setup.py` or `config.json` to reduce model RAM usage by ~3×. Models are downloaded automatically from Hugging Face on first use and cached locally.
 
 ### Execution provider
 
 | Option | When to use |
 |---|---|
 | **DirectML** *(default)* | AMD or Intel GPU on Windows |
-| **CUDA** | NVIDIA GPU | ENTIRELY UNTESTED AS OF NOW |
+| **CUDA** | NVIDIA GPU |
 | **CPU** | No GPU, or if GPU acceleration causes issues |
 
 ---
@@ -155,6 +157,7 @@ Voice input will now launch automatically on every login. To stop it, open Task 
 
 **Transcription is empty / very low amplitude in log**
 Multiple instances may be running and interfering with the audio device. Open Task Manager, end all `python.exe` and `pythonw.exe` processes, then relaunch.
+
 
 **Wrong microphone being used**
 `sounddevice` picks the Windows default input device. If that's not your mic, open Windows Sound Settings → Input → set your preferred microphone as default.

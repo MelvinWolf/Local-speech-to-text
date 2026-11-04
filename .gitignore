@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local artifacts
+voice_input.log
+config.json
+*.bak
+
+# Bench reference recordings (user voice, do not commit)
+bench/recordings/*
+!bench/recordings/.gitkeep
