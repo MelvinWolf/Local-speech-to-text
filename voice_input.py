@@ -54,6 +54,8 @@ with open(CONFIG_FILE) as f:
     cfg = json.load(f)
 
 LEGACY_MODEL_MAP = {
+    "parakeet-ultra": "Masterx/parakeet-tdt-0.6b-ultra-onnx",
+    "parakeet-redux": "eschmidbauer/parakeet-redux-onnx",
     "nemo-canary-1b-flash": "nemo-canary-1b-v2",
     "openai-whisper-large-v3-turbo": "onnx-community/whisper-large-v3-turbo",
     "openai-whisper-tiny": "onnx-community/whisper-tiny",
@@ -63,7 +65,7 @@ MODE               = cfg.get("mode", "toggle")
 HOTKEY_VK          = cfg.get("hotkey_vk", 0x6B)          # default: Numpad +
 HOTKEY_NAME        = cfg.get("hotkey_name", "Numpad +")
 VAD_SILENCE_MS     = cfg.get("vad_silence_ms", 500)
-RAW_MODEL_NAME     = cfg.get("model", "nemo-parakeet-tdt-0.6b-v3")
+RAW_MODEL_NAME     = cfg.get("model", "Masterx/parakeet-tdt-0.6b-ultra-onnx")
 MODEL_NAME         = LEGACY_MODEL_MAP.get(RAW_MODEL_NAME, RAW_MODEL_NAME)
 QUANTIZATION       = cfg.get("quantization", None)
 PROVIDERS          = cfg.get("providers", ["DmlExecutionProvider"])
@@ -182,21 +184,39 @@ def _load_asr_model():
     so = ort.SessionOptions()
     so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     so.log_severity_level = 3
+    # Parakeet Redux uses 4-bit MatMulNBits ternary weights which are CPU-native
+    # and incompatible with DirectML's Reshape kernel (0x8007023E).
+    is_redux = "redux" in MODEL_NAME.lower()
+    active_providers = ["CPUExecutionProvider"] if is_redux else PROVIDERS
+    quant = None if is_redux else QUANTIZATION
     use_dml = any(
         (p == "DmlExecutionProvider" if isinstance(p, str) else p[0] == "DmlExecutionProvider")
-        for p in PROVIDERS
+        for p in active_providers
     )
     preproc_cfg = {"use_numpy_preprocessors": True} if use_dml else None
-    m = onnx_asr.load_model(
-        MODEL_NAME,
-        quantization=QUANTIZATION,
-        sess_options=so,
-        providers=PROVIDERS,
-        preprocessor_config=preproc_cfg,
-    )
-    # Warmup pass: compiles DirectML shaders at startup and verifies ONNX Runtime health
-    m.recognize(np.zeros(SAMPLE_RATE // 2, dtype=np.float32), sample_rate=SAMPLE_RATE)
-    return m
+    try:
+        m = onnx_asr.load_model(
+            MODEL_NAME,
+            quantization=quant,
+            sess_options=so,
+            providers=active_providers,
+            preprocessor_config=preproc_cfg,
+        )
+        # Warmup pass: compiles DirectML shaders at startup and verifies ONNX Runtime health
+        m.recognize(np.zeros(SAMPLE_RATE // 2, dtype=np.float32), sample_rate=SAMPLE_RATE)
+        return m
+    except Exception as e:
+        if active_providers != ["CPUExecutionProvider"]:
+            log.warning(f"Provider {active_providers} failed during warmup ({e}); falling back to CPUExecutionProvider.")
+            m = onnx_asr.load_model(
+                MODEL_NAME,
+                quantization=quant,
+                sess_options=so,
+                providers=["CPUExecutionProvider"],
+            )
+            m.recognize(np.zeros(SAMPLE_RATE // 2, dtype=np.float32), sample_rate=SAMPLE_RATE)
+            return m
+        raise
 
 log.info(f"Loading model: {MODEL_NAME} (quantization={QUANTIZATION}, providers={PROVIDERS})")
 model = _load_asr_model()

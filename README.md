@@ -109,7 +109,9 @@ How long silence must persist (in milliseconds) before transcription is triggere
 
 | Model | Key | Size | Languages | Best for |
 |---|---|---|---|---|
-| **Parakeet TDT v3** *(default)* | `nemo-parakeet-tdt-0.6b-v3` | 2.5 GB | 25 EU languages (EN, DE, FR, ES, ...) | Best balance — recommended for European multilingual use |
+| **Parakeet Ultra 0.6B** *(default)* | `Masterx/parakeet-tdt-0.6b-ultra-onnx` | 1.2 GB (FP16) / 2.4 GB (FP32) | 25 EU languages (EN, DE, FR, ES, ...) | Moondream post-trained v3 — highest multilingual & noise accuracy on DirectML GPU |
+| **Parakeet Redux 0.6B** | `eschmidbauer/parakeet-redux-onnx` | 400 MB (1.58-bit ternary) | 25 EU languages | Ultra-lightweight CPU-native (~218 ms for 5s on CPU, 0 VRAM) |
+| **Parakeet TDT v3** | `nemo-parakeet-tdt-0.6b-v3` | 2.5 GB | 25 EU languages | NVIDIA base multilingual model |
 | **Parakeet TDT v2** | `nemo-parakeet-tdt-0.6b-v2` | 1.2 GB | English only | Very fast English-only transducer |
 | **Parakeet CTC 0.6B** | `nemo-parakeet-ctc-0.6b` | 1.2 GB | English only | Single-pass CTC decoder — lowest latency |
 | **Canary 1B v2** | `nemo-canary-1b-v2` | 4 GB | 25 EU languages | High multilingual accuracy + translation |

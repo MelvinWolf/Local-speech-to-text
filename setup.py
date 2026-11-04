@@ -14,8 +14,16 @@ CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.j
 
 MODELS = [
     {
+        "key": "Masterx/parakeet-tdt-0.6b-ultra-onnx",
+        "label": "Parakeet Ultra 0.6B — Moondream post-trained v3, highest accuracy  [Recommended, 1.2GB FP16 / 2.4GB FP32]"
+    },
+    {
+        "key": "eschmidbauer/parakeet-redux-onnx",
+        "label": "Parakeet Redux 0.6B — 1.58-bit ternary, ultra-light CPU-native  [400MB, 0 VRAM]"
+    },
+    {
         "key": "nemo-parakeet-tdt-0.6b-v3",
-        "label": "Parakeet TDT v3 — 25 EU languages (EN/DE/FR/ES/...)  [Recommended, 2.5GB]"
+        "label": "Parakeet TDT v3 — NVIDIA base 25 EU languages (EN/DE/FR/ES/...)  [2.5GB]"
     },
     {
         "key": "nemo-parakeet-tdt-0.6b-v2",
@@ -44,7 +52,8 @@ MODELS = [
 ]
 
 QUANTIZATIONS = [
-    (None,   "Full precision (FP32) — best accuracy & DirectML GPU compatibility  [Recommended]"),
+    ("fp16", "FP16 half precision — 2x smaller VRAM & fastest on AMD/DirectML  [Recommended for Parakeet Ultra]"),
+    (None,   "Full precision (FP32) — universal compatibility across all models"),
     ("int8", "INT8 quantized — ~3x smaller RAM footprint & faster CPU fallback"),
 ]
 
