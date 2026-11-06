@@ -12,6 +12,7 @@ import ctypes.wintypes as wintypes
 import threading
 import time
 import logging
+import wave
 import winsound
 
 # --- Ensure attached to interactive 'Default' desktop (before importing pyautogui) ---
@@ -168,13 +169,20 @@ def paste_text(text):
         except Exception:
             pass
 
-def play_cue(start=True):
-    """Play a brief, non-blocking tone on record start/stop if audio_feedback is enabled."""
+def play_cue(kind="start"):
+    """Play a brief, non-blocking tone on record start/stop/error if audio_feedback is enabled."""
     if not AUDIO_FEEDBACK:
         return
     def _beep():
         try:
-            winsound.Beep(880 if start else 520, 45)
+            if kind == "start":
+                winsound.Beep(880, 75)
+            elif kind == "stop":
+                winsound.Beep(520, 75)
+            elif kind == "error":
+                winsound.Beep(320, 90)
+                time.sleep(0.05)
+                winsound.Beep(260, 110)
         except Exception:
             pass
     threading.Thread(target=_beep, daemon=True).start()
@@ -202,6 +210,9 @@ def _load_asr_model():
             providers=active_providers,
             preprocessor_config=preproc_cfg,
         )
+        # Clamp FP16 encoded_lengths rounding on long (>80s) recordings so
+        # onnx_asr's `assert encodings_len <= encodings.shape[0]` never triggers.
+        m.asr.use_low_precision = True
         # Warmup pass: compiles DirectML shaders at startup and verifies ONNX Runtime health
         m.recognize(np.zeros(SAMPLE_RATE // 2, dtype=np.float32), sample_rate=SAMPLE_RATE)
         return m
@@ -214,6 +225,7 @@ def _load_asr_model():
                 sess_options=so,
                 providers=["CPUExecutionProvider"],
             )
+            m.asr.use_low_precision = True
             m.recognize(np.zeros(SAMPLE_RATE // 2, dtype=np.float32), sample_rate=SAMPLE_RATE)
             return m
         raise
@@ -255,7 +267,12 @@ collecting   = False
 audio_chunks = []
 _toggle_lock = threading.Lock()
 
+_last_cb_time = time.monotonic()
+_reopen_lock  = threading.Lock()
+
 def audio_callback(indata, frames, time_info, status):
+    global _last_cb_time
+    _last_cb_time = time.monotonic()
     if collecting:
         audio_chunks.append(indata.copy())
 
@@ -266,17 +283,63 @@ if INPUT_DEVICE and _device_idx is None:
         f"Configured input_device {INPUT_DEVICE!r} not found among current devices; "
         f"falling back to system default."
     )
-audio_stream = sd.InputStream(
-    samplerate=SAMPLE_RATE, channels=1, dtype="float32",
-    callback=audio_callback,
-    device=_device_idx,
-)
-audio_stream.start()
+
+def _open_stream(callback=None):
+    s = sd.InputStream(
+        samplerate=SAMPLE_RATE, channels=1, dtype="float32",
+        callback=callback or _active_cb,
+        device=_device_idx,
+    )
+    s.start()
+    return s
+
+_active_cb = audio_callback
+audio_stream = _open_stream()
 try:
     _opened = sd.query_devices(_device_idx if _device_idx is not None else sd.default.device[0])
     log.info(f"Audio stream open on device: {_opened['name']!r} (hostapi {_opened['hostapi']})")
 except Exception as e:
     log.info(f"Audio stream open (device introspection failed: {e})")
+
+def _reopen_stream(reason):
+    """Tear down and recreate the input stream (never blocks the caller on a hung close)."""
+    global audio_stream, _last_cb_time
+    if not _reopen_lock.acquire(blocking=False):
+        return
+    try:
+        log.warning(f"Reopening audio stream: {reason}")
+        old = audio_stream
+        def _close_old():
+            try:
+                old.abort()
+                old.close()
+            except Exception:
+                pass
+        t = threading.Thread(target=_close_old, daemon=True)
+        t.start()
+        t.join(timeout=2)
+        try:
+            sd._terminate(); sd._initialize()   # refresh PortAudio device list
+        except Exception:
+            pass
+        audio_stream = _open_stream()
+        _last_cb_time = time.monotonic()
+        log.info("Audio stream reopened.")
+    except Exception as e:
+        log.error(f"Failed to reopen audio stream: {e!r}")
+    finally:
+        _reopen_lock.release()
+
+def _watchdog():
+    while True:
+        time.sleep(3)
+        try:
+            if time.monotonic() - _last_cb_time > 4.0:
+                _reopen_stream("no audio callbacks for >4s")
+        except Exception as e:
+            log.error(f"watchdog error: {e!r}")
+
+threading.Thread(target=_watchdog, daemon=True).start()
 
 # --- Transcription ---
 def _is_gpu_lost(e):
@@ -295,10 +358,63 @@ def _recognize_with_recovery(audio):
         model = _load_asr_model()
         return model.recognize(audio, sample_rate=SAMPLE_RATE)
 
+LAST_WAV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "last_recording.wav")
+
+def _save_last_recording(audio):
+    """Save the most recent recording to last_recording.wav as a safety backup."""
+    try:
+        pcm16 = np.clip(audio * 32767.0, -32768, 32767).astype(np.int16)
+        with wave.open(LAST_WAV_FILE, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(SAMPLE_RATE)
+            wf.writeframes(pcm16.tobytes())
+    except Exception as e:
+        log.warning(f"Failed to save last_recording.wav: {e}")
+
+def _split_on_silence(audio, target_chunk_s=25):
+    """Split audio into ~target_chunk_s segments at the quietest 100ms window near each boundary."""
+    target_samples = SAMPLE_RATE * target_chunk_s
+    search_radius  = SAMPLE_RATE * 3   # search ±3s around boundary for lowest energy pause
+    win_samples    = SAMPLE_RATE // 10 # 100ms window
+    chunks = []
+    pos = 0
+    n = len(audio)
+    while pos < n:
+        if n - pos <= target_samples + search_radius:
+            chunks.append(audio[pos:])
+            break
+        center = pos + target_samples
+        lo = max(pos + SAMPLE_RATE * 5, center - search_radius)
+        hi = min(n - win_samples, center + search_radius)
+        best_cut = center
+        best_energy = float("inf")
+        for idx in range(lo, hi, win_samples // 2):
+            energy = float(np.mean(audio[idx:idx + win_samples] ** 2))
+            if energy < best_energy:
+                best_energy = energy
+                best_cut = idx + win_samples // 2
+        chunks.append(audio[pos:best_cut])
+        pos = best_cut
+    return chunks
+
 def transcribe_chunks(audio):
     if CHUNK_DURATION_S <= 0:
-        result = _recognize_with_recovery(audio)
-        return result.strip() if result else ""
+        try:
+            result = _recognize_with_recovery(audio)
+            return result.strip() if result else ""
+        except Exception as e:
+            if len(audio) > SAMPLE_RATE * 25:
+                log.warning(f"Single-call recognize failed on {len(audio)/SAMPLE_RATE:.1f}s audio ({e!r}); falling back to silence-aware chunking.")
+                texts = []
+                for chunk in _split_on_silence(audio, target_chunk_s=25):
+                    if len(chunk) < SAMPLE_RATE * 0.3:
+                        continue
+                    res = _recognize_with_recovery(chunk)
+                    if res and res.strip():
+                        texts.append(res.strip())
+                return " ".join(texts)
+            raise
     chunk_size = SAMPLE_RATE * CHUNK_DURATION_S
     texts = []
     for i in range(0, len(audio), chunk_size):
@@ -321,6 +437,7 @@ def transcribe_and_paste(audio_data=None):
         if len(audio) < SAMPLE_RATE * 0.3:
             log.info("Too short, ignored.")
             return
+        _save_last_recording(audio)
         t0 = time.perf_counter()
         if CHUNK_DURATION_S > 0:
             n_chunks = int(np.ceil(duration / CHUNK_DURATION_S))
@@ -335,7 +452,8 @@ def transcribe_and_paste(audio_data=None):
                 text += ' '
             paste_text(text)
     except Exception as e:
-        log.error(f"transcribe_and_paste error: {e}")
+        log.exception(f"transcribe_and_paste error: {e!r}")
+        play_cue("error")
 
 # ================================================================
 # MODE: TOGGLE / HOLD (PUSH-TO-TALK)
@@ -345,36 +463,47 @@ if MODE in ("toggle", "hold"):
 
     def start_recording():
         global collecting, audio_chunks
-        with _toggle_lock:
+        if not _toggle_lock.acquire(timeout=3):
+            log.error("start_recording: lock busy for 3s, forcing stream reopen")
+            threading.Thread(target=_reopen_stream, args=("lock timeout",), daemon=True).start()
+            return
+        try:
             if collecting:
                 return
+            if time.monotonic() - _last_cb_time > 1.0:
+                _reopen_stream("stale stream before recording")
             audio_chunks = []
-            if not audio_stream.active:
-                audio_stream.start()
             collecting = True
             log.info("Recording...")
-            play_cue(start=True)
+            play_cue("start")
+        finally:
+            _toggle_lock.release()
 
     def stop_recording():
         global collecting
-        with _toggle_lock:
+        if not _toggle_lock.acquire(timeout=3):
+            log.error("stop_recording: lock busy for 3s, forcing stream reopen")
+            collecting = False
+            threading.Thread(target=_reopen_stream, args=("lock timeout",), daemon=True).start()
+            return
+        try:
             if not collecting:
                 return
-            # Stop FIRST so PortAudio drains pending buffers into the callback
-            # while the gate is still open. Closing the gate first would cause
-            # those flushed callbacks to drop their audio.
-            audio_stream.stop()
+            # Keep the stream running (stop()/start() cycles can hang PortAudio on
+            # flaky devices). A short tail lets the last buffers reach the callback.
+            time.sleep(0.12)
             collecting = False
             snapshot = list(audio_chunks)
-            # Resume the stream now so the next start hotkey is instant.
-            audio_stream.start()
-            play_cue(start=False)
+            play_cue("stop")
             threading.Thread(
                 target=transcribe_and_paste, args=(snapshot,), daemon=True
             ).start()
+        finally:
+            _toggle_lock.release()
 
     def toggle():
         try:
+            log.info(f"Hotkey pressed (collecting={collecting})")
             if not collecting:
                 start_recording()
             else:
@@ -433,7 +562,8 @@ elif MODE == "handsfree":
     vad_chunks      = []
 
     def vad_audio_callback(indata, frames, time_info, status):
-        global speech_active, onset_counter, silence_counter, vad_chunks
+        global speech_active, onset_counter, silence_counter, vad_chunks, _last_cb_time
+        _last_cb_time = time.monotonic()
 
         rms       = float(np.sqrt(np.mean(indata ** 2)))
         is_speech = rms > ENERGY_THRESHOLD
@@ -474,12 +604,8 @@ elif MODE == "handsfree":
     # Replace stream callback for VAD mode
     audio_stream.stop()
     audio_stream.close()
-    audio_stream = sd.InputStream(
-        samplerate=SAMPLE_RATE, channels=1, dtype="float32",
-        callback=vad_audio_callback,
-        device=_device_idx,
-    )
-    audio_stream.start()
+    _active_cb = vad_audio_callback
+    audio_stream = _open_stream()
     log.info("VAD stream active. Listening...")
 
 else:
